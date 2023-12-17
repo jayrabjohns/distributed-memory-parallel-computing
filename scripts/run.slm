@@ -1,0 +1,9 @@
+#!/bin/bash
+#SBATCH --account=cm30225
+#SBATCH --partition=teaching
+#SBATCH --job-name=relaxation_coursework
+#SBATCH --nodes=1
+#SBATCH --mail-type=END
+#SBATCH --mail-user=jor37@bath.ac.uk
+pwd
+./relaxation
