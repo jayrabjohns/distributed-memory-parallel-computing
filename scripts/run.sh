@@ -1,4 +1,4 @@
 #!/bin/bash
 clear
 ./scripts/build.sh
-./relaxation
+mpirun -n "$1" relaxation "$2"
