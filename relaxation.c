@@ -8,21 +8,6 @@
 #define ROOT 0
 #define DEFAULT_TAG 99
 
-// int sum(int start, int stop, int step)
-// {
-//     int result = 0;
-//     for (int i = start; i <= stop; i += step)
-//     {
-//         printf("[%d] adding %d \n", start, i);
-//         result += i;
-//     }
-
-//     return result;
-// }
-
-void distribute_workload(int p_size, int n_procs, int send_counts[n_procs],
-                         int displacements[n_procs], int row_counts[n_procs]);
-
 int main(int argc, char *argv[])
 {
     // Init MPI
@@ -62,8 +47,8 @@ int main(int argc, char *argv[])
         array_2d_print(p_size, p_size, problem_global, rank);
     }
 
-    int send_counts[n_procs], displs[n_procs], row_counts[n_procs];
-    distribute_workload(p_size, n_procs, send_counts, displs, row_counts);
+    int send_counts[n_procs], send_displs[n_procs], row_counts[n_procs];
+    distribute_workload(p_size, n_procs, send_counts, send_displs, row_counts);
 
     // Debug log rows each process will operate on
     if (rank == ROOT)
@@ -77,7 +62,7 @@ int main(int argc, char *argv[])
         printf("row starts: ");
         for (size_t i = 0; i < (size_t)n_procs; i++)
         {
-            printf("%d, ", displs[i]);
+            printf("%d, ", send_displs[i]);
         }
         printf("\n");
         printf("send counts: ");
@@ -89,16 +74,21 @@ int main(int argc, char *argv[])
     }
 
     // Allocate local chunk of the problem to work on
-    int n_rows = row_counts[rank];
+    int n_rows = send_counts[rank];
     double(*local_problem)[n_rows][p_size];
     rc = array_2d_try_alloc((size_t)n_rows, (size_t)p_size, &local_problem);
     if (rc != 0)
         return rc;
 
+    // A datatype to represent rows of contiguous values
+    MPI_Datatype row_t;
+    MPI_Type_contiguous(p_size, MPI_DOUBLE, &row_t);
+    MPI_Type_commit(&row_t);
+
     // Distribute work among processes
-    MPI_Scatterv((double *)problem_global, send_counts, displs,
-                 MPI_DOUBLE, (double *)local_problem, send_counts[rank],
-                 MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
+    MPI_Scatterv(problem_global, send_counts, send_displs,
+                 row_t, local_problem, send_counts[rank],
+                 row_t, ROOT, MPI_COMM_WORLD);
 
     printf("[%d] problem recieved:\n", rank);
     array_2d_print(n_rows, p_size, local_problem, rank);
@@ -112,9 +102,20 @@ int main(int argc, char *argv[])
         }
     }
 
-    // MPI_Gatherv((double *)local_problem, send_counts[rank], MPI_DOUBLE,
-    //             (double *)problem_global, send_counts, displs, MPI_DOUBLE,
-    //             ROOT, MPI_COMM_WORLD);
+    // Ignore first row since otherwise it could overwrite another processe's
+    // work during reconstruction.
+    const double *sendbuf = &((*local_problem)[1][0]);
+
+    // Calculate displacements relative to the global array because of this change
+    int recv_displs[n_procs];
+    for (size_t i = 0; i < n_procs; i++)
+    {
+        recv_displs[i] = send_displs[i] + 1;
+    }
+
+    MPI_Gatherv(sendbuf, row_counts[rank], row_t,
+                problem_global, row_counts, recv_displs, row_t,
+                ROOT, MPI_COMM_WORLD);
 
     if (rank == ROOT)
     {
@@ -125,6 +126,7 @@ int main(int argc, char *argv[])
     free(problem_global);
     free(local_problem);
 
+    MPI_Type_free(&row_t);
     MPI_Finalize();
     return 0;
 }
@@ -138,24 +140,11 @@ void distribute_workload(int p_size, int n_procs, int send_counts[n_procs],
     for (int i = 0; i < n_procs; i++)
     {
         rows = rows_per_proc + (i < extra_rows ? 1 : 0);
-        row_counts[i] = rows + 2;
-        send_counts[i] = row_counts[i] * p_size;
+        row_counts[i] = rows;
+        send_counts[i] = rows + 2;
         displacements[i] = total_displacement;
-        total_displacement += rows * p_size;
+        total_displacement += rows;
     }
-
-    // int rows_per_proc = (p_size - 2) / n_procs;
-    // int rows_left = (p_size - 2) % n_procs;
-    // int send_counts[n_procs], displs[n_procs], row_counts[n_procs];
-    // int extra_rows, total_displacement = 0;
-    // for (int i = 0; i < n_procs; i++)
-    // {
-    //     extra_rows = (i < rows_left) ? 1 : 0;
-    //     row_counts[i] = rows_per_proc + extra_rows + 2;
-    //     send_counts[i] = row_counts[i] * p_size;
-    //     displs[i] = total_displacement;
-    //     total_displacement += (row_counts[i] - 2) * p_size;
-    // }
 }
 
 void local_operations(int rows, int cols, double (*local_matrix)[rows][cols])
