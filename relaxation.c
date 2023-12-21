@@ -2,11 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 
 #include "relaxation.h"
 
 #define ROOT 0
 #define DEFAULT_TAG 99
+
+void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
+                       double prev_matrix[n_rows][n_cols]);
 
 int main(int argc, char *argv[])
 {
@@ -80,6 +84,11 @@ int main(int argc, char *argv[])
     if (rc != 0)
         return rc;
 
+    double(*local_problem_prev)[n_rows][p_size];
+    rc = array_2d_try_alloc((size_t)n_rows, (size_t)p_size, &local_problem_prev);
+    if (rc != 0)
+        return rc;
+
     // A datatype to represent rows of contiguous values
     MPI_Datatype row_t;
     MPI_Type_contiguous(p_size, MPI_DOUBLE, &row_t);
@@ -90,17 +99,14 @@ int main(int argc, char *argv[])
                  row_t, local_problem, send_counts[rank],
                  row_t, ROOT, MPI_COMM_WORLD);
 
+    // Create a copy of the matrix
+    memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
+
     printf("[%d] problem recieved:\n", rank);
     array_2d_print(n_rows, p_size, local_problem, rank);
 
     // Local operations
-    for (int i = 1; i < n_rows - 1; i++)
-    {
-        for (int j = 1; j < p_size - 1; j++)
-        {
-            (*local_problem)[i][j] += 1;
-        }
-    }
+    perform_iteration(n_rows, p_size, *local_problem, *local_problem_prev);
 
     // Ignore first row since otherwise it could overwrite another processe's
     // work during reconstruction.
@@ -108,7 +114,7 @@ int main(int argc, char *argv[])
 
     // Calculate displacements relative to the global array because of this change
     int recv_displs[n_procs];
-    for (size_t i = 0; i < n_procs; i++)
+    for (int i = 0; i < n_procs; i++)
     {
         recv_displs[i] = send_displs[i] + 1;
     }
@@ -129,6 +135,24 @@ int main(int argc, char *argv[])
     MPI_Type_free(&row_t);
     MPI_Finalize();
     return 0;
+}
+
+void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
+                       double prev_matrix[n_rows][n_cols])
+{
+    // Perform calculations from start row until end row
+    for (int row = 1; row < n_rows - 1; row++)
+    {
+        for (int col = 1; col < n_cols - 1; col++)
+        {
+            double neighbours_sum =
+                prev_matrix[row - 1][col] +
+                prev_matrix[row + 1][col] +
+                prev_matrix[row][col - 1] +
+                prev_matrix[row][col + 1];
+            matrix[row][col] = neighbours_sum / 4.0;
+        }
+    }
 }
 
 void distribute_workload(int p_size, int n_procs, int send_counts[n_procs],
@@ -199,7 +223,7 @@ void load_testcase_1(int size, double (*matrix)[size][size])
         (*matrix)[i][0] = 1.0;
         for (int j = 1; j < size; j++)
         {
-            (*matrix)[i][j] = i + 1;
+            (*matrix)[i][j] = 0.0; // i + 1;
         }
     }
 }
