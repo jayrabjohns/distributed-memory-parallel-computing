@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "relaxation.h"
 
@@ -11,6 +12,10 @@
 
 void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
                        double prev_matrix[n_rows][n_cols]);
+
+void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
+                          double local_problem[n_rows][n_cols],
+                          MPI_Datatype row_t);
 
 int main(int argc, char *argv[])
 {
@@ -53,6 +58,13 @@ int main(int argc, char *argv[])
 
     int send_counts[n_procs], send_displs[n_procs], row_counts[n_procs];
     distribute_workload(p_size, n_procs, send_counts, send_displs, row_counts);
+
+    // Calculate displacements ignoring the first and last rows
+    int recv_displs[n_procs];
+    for (int i = 0; i < n_procs; i++)
+    {
+        recv_displs[i] = send_displs[i] + 1;
+    }
 
     // Debug log rows each process will operate on
     if (rank == ROOT)
@@ -102,23 +114,31 @@ int main(int argc, char *argv[])
     // Create a copy of the matrix
     memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
 
-    printf("[%d] problem recieved:\n", rank);
-    array_2d_print(n_rows, p_size, local_problem, rank);
+    // printf("[%d] problem recieved:\n", rank);
+    // array_2d_print(n_rows, p_size, local_problem, rank);
 
+    bool is_converged = false;
+    int iterations = 0;
+    while (iterations < 3)
+    {
     // Local operations
     perform_iteration(n_rows, p_size, *local_problem, *local_problem_prev);
+
+        printf("[%d] problem after iteration:\n", rank);
+        array_2d_print(n_rows, p_size, local_problem, rank);
+        fflush(stdout);
+
+        // is_converged = check_is_converged(n_rows, p_size, *local_problem);
+        sync_with_neighbours(rank, n_procs, n_rows,
+                             p_size, *local_problem, row_t);
+
+        memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
+        iterations++;
+    }
 
     // Ignore first row since otherwise it could overwrite another processe's
     // work during reconstruction.
     const double *sendbuf = &((*local_problem)[1][0]);
-
-    // Calculate displacements relative to the global array because of this change
-    int recv_displs[n_procs];
-    for (int i = 0; i < n_procs; i++)
-    {
-        recv_displs[i] = send_displs[i] + 1;
-    }
-
     MPI_Gatherv(sendbuf, row_counts[rank], row_t,
                 problem_global, row_counts, recv_displs, row_t,
                 ROOT, MPI_COMM_WORLD);
@@ -152,6 +172,74 @@ void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
                 prev_matrix[row][col + 1];
             matrix[row][col] = neighbours_sum / 4.0;
         }
+    }
+}
+
+void send_to_neighbours(int rank, int n_procs, const double *send_top, const double *send_bot, MPI_Datatype row_t)
+{
+    // Send to neighbour above
+    if (rank > 0)
+        MPI_Send(send_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD);
+
+    // Send to neighbour below
+    if (rank < n_procs - 1)
+        MPI_Send(send_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD);
+}
+
+void receive_from_neighbours(int rank, int n_procs, const double *recv_top, const double *recv_bot, MPI_Datatype row_t)
+{
+    // Receive from neighbour above
+    if (rank > 0)
+    {
+        MPI_Status *status = malloc(sizeof(MPI_Status));
+        MPI_Recv(recv_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD, status);
+    }
+
+    // Receive from neighbour below
+    if (rank < n_procs - 1)
+    {
+        MPI_Status *status = malloc(sizeof(MPI_Status));
+        MPI_Recv(recv_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD, status);
+    }
+}
+
+/*
+barrier
+have a group of even rank and group of odd rank.
+even rank receives
+then odd rank receives
+
+- > very synchronous, would need all processes to be ready to exchange at the same time.
+*/
+void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
+                          double local_problem[n_rows][n_cols],
+                          MPI_Datatype row_t)
+{
+    // To continue, the neighbours are required to have finished, so this
+    // uses a blocking call. We block send as well to simplify implementation.
+
+    // ~~~~ <- recv_top, we receive this from neighbour above
+    // #### <- send_top, we send this to neighbour above
+    // ####
+    // #### <- bot row, we send this to neighbour below
+    // @@@@ <- recv_bot, we receive this from neighbour below
+
+    // Even ranks send first and receive second
+    // while odd ranks receive first and send second
+    const double *send_top = &(local_problem[1][0]);
+    const double *send_bot = &(local_problem[n_rows - 2][0]);
+    double *recv_top = &(local_problem[0][0]);
+    double *recv_bot = &(local_problem[n_rows - 1][0]);
+
+    if (rank % 2 == 0)
+    {
+        send_to_neighbours(rank, n_procs, send_top, send_bot, row_t);
+        receive_from_neighbours(rank, n_procs, recv_top, recv_bot, row_t);
+    }
+    else
+    {
+        receive_from_neighbours(rank, n_procs, recv_top, recv_bot, row_t);
+        send_to_neighbours(rank, n_procs, send_top, send_bot, row_t);
     }
 }
 
