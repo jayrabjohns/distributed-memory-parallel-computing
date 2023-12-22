@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "relaxation.h"
 
@@ -16,6 +17,8 @@ void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
 void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
                           double local_problem[n_rows][n_cols],
                           MPI_Datatype row_t);
+
+int solve_sync(size_t size, double matrix[size][size], double precision);
 
 int main(int argc, char *argv[])
 {
@@ -121,8 +124,8 @@ int main(int argc, char *argv[])
     int iterations = 0;
     while (iterations < 3)
     {
-    // Local operations
-    perform_iteration(n_rows, p_size, *local_problem, *local_problem_prev);
+        // Local operations
+        perform_iteration(n_rows, p_size, *local_problem, *local_problem_prev);
 
         printf("[%d] problem after iteration:\n", rank);
         array_2d_print(n_rows, p_size, local_problem, rank);
@@ -149,11 +152,12 @@ int main(int argc, char *argv[])
         array_2d_print(p_size, p_size, problem_global, rank);
     }
 
-    free(problem_global);
+    // free(problem_global);
     free(local_problem);
 
     MPI_Type_free(&row_t);
     MPI_Finalize();
+
     return 0;
 }
 
@@ -259,16 +263,21 @@ void distribute_workload(int p_size, int n_procs, int send_counts[n_procs],
     }
 }
 
-void local_operations(int rows, int cols, double (*local_matrix)[rows][cols])
+bool matrix_has_converged(double precision, int n_rows, int n_cols,
+                          double m1[n_rows][n_cols],
+                          double m2[n_rows][n_cols])
 {
-    // Local operations
-    for (int i = 0; i < rows; i++)
+    bool is_converged = true;
+    for (int row = 0; row < n_rows && is_converged; row++)
     {
-        for (int j = 0; j < cols; j++)
+        for (int col = 0; col < n_cols && is_converged; col++)
         {
-            (*local_matrix)[i][j] += 1;
+            double diff = fabs(m1[row][col] - m2[row][col]);
+            if (diff > precision)
+                is_converged = false;
         }
     }
+    return is_converged;
 }
 
 int array_2d_try_alloc(size_t rows, size_t cols, double (**matrix)[rows][cols])
@@ -314,4 +323,103 @@ void load_testcase_1(int size, double (*matrix)[size][size])
             (*matrix)[i][j] = 0.0; // i + 1;
         }
     }
+}
+
+// int test_and_compare(
+//     size_t size,
+//     double precision,
+//     int thread_count,
+//     void (*load_test_data)(size_t, double (*)[size][size]))
+// {
+//     printf("matrix size: %ld\nprecision: %f\nthread count:%ld\n",
+//            size, precision, thread_count);
+
+//     // Arrange - allocate memory, initialise variables
+//     int rc = 0;
+//     double(*result_async)[size][size];
+//     double(*result_sync)[size][size];
+
+//     rc = array_2d_try_alloc(size, size, &result_async);
+//     if (rc != 0)
+//         return rc;
+
+//     rc = array_2d_try_alloc(size, size, &result_sync);
+//     if (rc != 0)
+//     {
+//         free(result_async);
+//         return rc;
+//     }
+
+//     (*load_test_data)(size, result_async);
+//     (*load_test_data)(size, result_sync);
+
+//     // Act - perform the tested action
+//     solve(size, result_async, thread_count, precision);
+//     solve_sync(size, result_sync, precision);
+
+//     // Assert - assert that the action performed successfully
+
+//     matrix_has_converged(precision, size, size, *result_async, *result_sync);
+
+//     if (rc == 0)
+//     {
+//         printf("PASS solution matches synchronous implementation\n");
+//     }
+//     else
+//     {
+//         rc = 1;
+//         printf("FAIL solution doesn't match synchronous implementation\n");
+//         printf("\nsync impl result\n");
+//         array_2d_print(size, size, result_sync, ROOT);
+//         printf("async impl result:\n");
+//         array_2d_print(size, size, result_async, ROOT);
+//     }
+
+//     free(result_sync);
+//     free(result_async);
+
+//     return rc;
+// }
+
+int solve_sync(
+    size_t size,
+    double matrix[size][size],
+    double precision)
+{
+    int rc = 0;
+    double(*prev_matrix)[size][size];
+
+    // Allocate memory for copy of previous iteration.
+    rc = array_2d_try_alloc(size, size, &prev_matrix);
+    if (rc != 0)
+        return rc;
+
+    // Copy the previous iteration
+    memcpy(prev_matrix, matrix, sizeof(*prev_matrix));
+    printf("\n");
+
+    int iterations = 0;
+    bool converged = false;
+    double elapsed_time;
+    time_t start, now;
+    time(&start);
+    while (!converged)
+    {
+        perform_iteration(size - 1, size - 1, matrix, *prev_matrix);
+
+        // Check for convergence
+        converged = matrix_has_converged(precision, size, size, matrix, prev_matrix);
+        memcpy(prev_matrix, matrix, sizeof(*prev_matrix));
+        ++iterations;
+    }
+
+    time(&now);
+    elapsed_time = difftime(now, start);
+    printf("[SYNC] solved in %d iterations in %.0lfs\n",
+           iterations, elapsed_time);
+
+    // Cleanup
+    free(prev_matrix);
+
+    return rc;
 }
