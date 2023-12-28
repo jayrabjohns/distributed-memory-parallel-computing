@@ -76,4 +76,31 @@ Creates a nxn matrix of the form
  */
 void load_testcase_1(int size, double (*matrix)[size][size]);
 
+/*
+Runs a synchronous implemetation for the given problem and compares
+it with a given solution.
+
+Returns true if the solutions match within one unit of `precision`.
+
+`p_size` is the length of one side of `comparison.
+`comparison` is a 2D square matrix and is the solution to compare against.
+`load_testcase` is a funciton that provides the starting problem configuraion.
+*/
+bool result_matches_sync_impl(int p_size, double precision,
+                              double(comparison)[p_size][p_size],
+                              void (*load_testcase)(int, double (*)[p_size][p_size]));
+
+/*
+Adapted from coursework 1.
+
+Performs the relaxation technique on a given matrix synchronously.
+
+Returns 0 if exited normally.
+
+`size` is the length of one side of the matrix.
+`matrix` points to a 2D square matrix with length equal to `size`.
+`precision` is the max difference between iterations to be classed as converged.
+*/
+int solve_sync(int p_size, double (*matrix)[p_size][p_size], double precision);
+
 #endif

@@ -18,8 +18,6 @@ void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
                           double local_problem[n_rows][n_cols],
                           MPI_Datatype row_t);
 
-int solve_sync(size_t size, double matrix[size][size], double precision);
-
 int main(int argc, char *argv[])
 {
     // Init MPI
@@ -32,6 +30,7 @@ int main(int argc, char *argv[])
     // Parse arguments
     if (argc < 3)
     {
+        fprintf(stderr, "Not enough arguments. \n");
         fprintf(stderr, "Usage: relaxation [int problem_size] [float precision] \n");
         return 1;
     }
@@ -41,11 +40,11 @@ int main(int argc, char *argv[])
     if (p_size < n_procs + 2)
     {
         // Early fail because this was most almost certainly a mistake
-        fprintf(stderr, "The problem size cannot be less than the number of processors + 2");
+        fprintf(stderr, "Usage: relaxation [int problem_size] [float precision] \n");
+        fprintf(stderr, "The problem size cannot be less than the number of processors + 2 \n");
         return 1;
     }
 
-    // Set up problem
     int rc;
     double(*problem_global)[p_size][p_size];
     rc = array_2d_try_alloc((size_t)p_size, (size_t)p_size, &problem_global);
@@ -127,9 +126,9 @@ int main(int argc, char *argv[])
         // Local operations
         perform_iteration(n_rows, p_size, *local_problem, *local_problem_prev);
 
-        printf("[%d] problem after iteration:\n", rank);
-        array_2d_print(n_rows, p_size, local_problem, rank);
-        fflush(stdout);
+        // printf("[%d] problem after iteration:\n", rank);
+        // array_2d_print(n_rows, p_size, local_problem, rank);
+        // fflush(stdout);
 
         // is_converged = check_is_converged(n_rows, p_size, *local_problem);
         sync_with_neighbours(rank, n_procs, n_rows,
@@ -158,6 +157,12 @@ int main(int argc, char *argv[])
     MPI_Type_free(&row_t);
     MPI_Finalize();
 
+    if (rank == ROOT)
+    {
+        result_matches_sync_impl(p_size, precision, *problem_global,
+                                 &load_testcase_1);
+    }
+
     return 0;
 }
 
@@ -179,7 +184,7 @@ void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
     }
 }
 
-void send_to_neighbours(int rank, int n_procs, const double *send_top, const double *send_bot, MPI_Datatype row_t)
+void send_to_neighbours(int rank, int n_procs, double *send_top, double *send_bot, MPI_Datatype row_t)
 {
     // Send to neighbour above
     if (rank > 0)
@@ -190,7 +195,7 @@ void send_to_neighbours(int rank, int n_procs, const double *send_top, const dou
         MPI_Send(send_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD);
 }
 
-void receive_from_neighbours(int rank, int n_procs, const double *recv_top, const double *recv_bot, MPI_Datatype row_t)
+void receive_from_neighbours(int rank, int n_procs, double *recv_top, double *recv_bot, MPI_Datatype row_t)
 {
     // Receive from neighbour above
     if (rank > 0)
@@ -230,8 +235,8 @@ void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
 
     // Even ranks send first and receive second
     // while odd ranks receive first and send second
-    const double *send_top = &(local_problem[1][0]);
-    const double *send_bot = &(local_problem[n_rows - 2][0]);
+    double *send_top = &(local_problem[1][0]);
+    double *send_bot = &(local_problem[n_rows - 2][0]);
     double *recv_top = &(local_problem[0][0]);
     double *recv_bot = &(local_problem[n_rows - 1][0]);
 
@@ -325,72 +330,38 @@ void load_testcase_1(int size, double (*matrix)[size][size])
     }
 }
 
-// int test_and_compare(
-//     size_t size,
-//     double precision,
-//     int thread_count,
-//     void (*load_test_data)(size_t, double (*)[size][size]))
-// {
-//     printf("matrix size: %ld\nprecision: %f\nthread count:%ld\n",
-//            size, precision, thread_count);
+bool result_matches_sync_impl(int p_size, double precision,
+                              double(comparison)[p_size][p_size],
+                              void (*load_testcase)(int, double (*)[p_size][p_size]))
+{
+    double(*sync_solution)[p_size][p_size];
+    array_2d_try_alloc((size_t)p_size, (size_t)p_size, &sync_solution);
+    (*load_testcase)(p_size, sync_solution);
+    solve_sync(p_size, sync_solution, precision);
 
-//     // Arrange - allocate memory, initialise variables
-//     int rc = 0;
-//     double(*result_async)[size][size];
-//     double(*result_sync)[size][size];
+    printf("synchronously solved solution: \n");
+    array_2d_print(p_size, p_size, sync_solution, ROOT);
 
-//     rc = array_2d_try_alloc(size, size, &result_async);
-//     if (rc != 0)
-//         return rc;
+    bool sols_match = matrix_has_converged(precision, p_size, p_size,
+                                           comparison, *sync_solution);
+    if (sols_match)
+    {
+        printf("PASS Solutions match within a precision of %f", precision);
+    }
+    else
+    {
+        printf("FAIL Solutions don't match within the given precision (%f)", precision);
+    }
 
-//     rc = array_2d_try_alloc(size, size, &result_sync);
-//     if (rc != 0)
-//     {
-//         free(result_async);
-//         return rc;
-//     }
+    free(sync_solution);
+    return sols_match;
+}
 
-//     (*load_test_data)(size, result_async);
-//     (*load_test_data)(size, result_sync);
-
-//     // Act - perform the tested action
-//     solve(size, result_async, thread_count, precision);
-//     solve_sync(size, result_sync, precision);
-
-//     // Assert - assert that the action performed successfully
-
-//     matrix_has_converged(precision, size, size, *result_async, *result_sync);
-
-//     if (rc == 0)
-//     {
-//         printf("PASS solution matches synchronous implementation\n");
-//     }
-//     else
-//     {
-//         rc = 1;
-//         printf("FAIL solution doesn't match synchronous implementation\n");
-//         printf("\nsync impl result\n");
-//         array_2d_print(size, size, result_sync, ROOT);
-//         printf("async impl result:\n");
-//         array_2d_print(size, size, result_async, ROOT);
-//     }
-
-//     free(result_sync);
-//     free(result_async);
-
-//     return rc;
-// }
-
-int solve_sync(
-    size_t size,
-    double matrix[size][size],
-    double precision)
+int solve_sync(int p_size, double (*matrix)[p_size][p_size], double precision)
 {
     int rc = 0;
-    double(*prev_matrix)[size][size];
-
-    // Allocate memory for copy of previous iteration.
-    rc = array_2d_try_alloc(size, size, &prev_matrix);
+    double(*prev_matrix)[p_size][p_size];
+    rc = array_2d_try_alloc((size_t)p_size, (size_t)p_size, &prev_matrix);
     if (rc != 0)
         return rc;
 
@@ -405,10 +376,8 @@ int solve_sync(
     time(&start);
     while (!converged)
     {
-        perform_iteration(size - 1, size - 1, matrix, *prev_matrix);
-
-        // Check for convergence
-        converged = matrix_has_converged(precision, size, size, matrix, prev_matrix);
+        perform_iteration(p_size, p_size, *matrix, *prev_matrix);
+        converged = matrix_has_converged(precision, p_size, p_size, *matrix, *prev_matrix);
         memcpy(prev_matrix, matrix, sizeof(*prev_matrix));
         ++iterations;
     }
