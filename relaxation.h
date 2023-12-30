@@ -86,7 +86,7 @@ Returns true if the solutions match within one unit of `precision`.
 `comparison` is a 2D square matrix and is the solution to compare against.
 `load_testcase` is a funciton that provides the starting problem configuraion.
 */
-bool result_matches_sync_impl(int p_size, double precision,
+bool test_result_matches_sync_impl(int p_size, double precision,
                               double(comparison)[p_size][p_size],
                               void (*load_testcase)(int, double (*)[p_size][p_size]));
 

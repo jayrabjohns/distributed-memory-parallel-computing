@@ -17,6 +17,7 @@ void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
 void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
                           double local_problem[n_rows][n_cols],
                           MPI_Datatype row_t);
+bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size], double precision);
 
 int main(int argc, char *argv[])
 {
@@ -138,6 +139,8 @@ int main(int argc, char *argv[])
         iterations++;
     }
 
+    printf("[%d] total iterations: %d \n", rank, iterations);
+
     // Ignore first row since otherwise it could overwrite another processe's
     // work during reconstruction.
     const double *sendbuf = &((*local_problem)[1][0]);
@@ -159,8 +162,10 @@ int main(int argc, char *argv[])
 
     if (rank == ROOT)
     {
-        result_matches_sync_impl(p_size, precision, *problem_global,
-                                 &load_testcase_1);
+        test_result_matches_sync_impl(p_size, precision, *problem_global,
+                                      &load_testcase_1);
+
+        test_result_has_converged(p_size, problem_global, precision);
     }
 
     return 0;
@@ -330,9 +335,9 @@ void load_testcase_1(int size, double (*matrix)[size][size])
     }
 }
 
-bool result_matches_sync_impl(int p_size, double precision,
-                              double(comparison)[p_size][p_size],
-                              void (*load_testcase)(int, double (*)[p_size][p_size]))
+bool test_result_matches_sync_impl(int p_size, double precision,
+                                   double(comparison)[p_size][p_size],
+                                   void (*load_testcase)(int, double (*)[p_size][p_size]))
 {
     double(*sync_solution)[p_size][p_size];
     array_2d_try_alloc((size_t)p_size, (size_t)p_size, &sync_solution);
@@ -346,15 +351,37 @@ bool result_matches_sync_impl(int p_size, double precision,
                                            comparison, *sync_solution);
     if (sols_match)
     {
-        printf("PASS Solutions match within a precision of %f", precision);
+        printf("PASS Solutions match within a precision of %f \n", precision);
     }
     else
     {
-        printf("FAIL Solutions don't match within the given precision (%f)", precision);
+        printf("FAIL Solutions don't match within the given precision (%f) \n", precision);
     }
 
     free(sync_solution);
     return sols_match;
+}
+
+bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size], double precision)
+{
+    double(*mat_copy)[p_size][p_size];
+    array_2d_try_alloc((size_t)p_size, (size_t)p_size, &mat_copy);
+    memcpy(mat_copy, mat, sizeof(*mat_copy));
+
+    perform_iteration(p_size, p_size, *mat_copy, *mat);
+    bool has_converged = matrix_has_converged(precision, p_size, p_size, *mat_copy, *mat);
+
+    if (has_converged)
+    {
+        printf("PASS Final matrix has successfully converged with a precision of %f \n", precision);
+    }
+    else
+    {
+        printf("FAIL Final matrix has not converged with a precision of %f \n", precision);
+    }
+
+    free(mat_copy);
+    return has_converged;
 }
 
 int solve_sync(int p_size, double (*matrix)[p_size][p_size], double precision)
