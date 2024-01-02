@@ -1,0 +1,12 @@
+row counts: 5000, 5000, 4999, 4999, 
+row starts: 0, 5000, 10000, 14999, 
+send counts: 5002, 5002, 5001, 5001, 
+[2] total iterations: 37 
+[3] total iterations: 37 
+[0] total iterations: 37 
+[1] total iterations: 37 
+Solved in 476.295082s 
+
+[SYNC] solved in 37 iterations in 106s
+PASS Solutions match within a precision of 0.010000 
+PASS Final matrix has successfully converged with a precision of 0.010000

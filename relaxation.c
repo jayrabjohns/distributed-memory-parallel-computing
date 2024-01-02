@@ -47,11 +47,11 @@ int main(int argc, char *argv[])
     int p_size = atoi(argv[1]);
     double precision = atof(argv[2]);
 
-    if (p_size < n_procs + 2)
+    if (p_size < n_procs * 5)
     {
         // Early fail because this was most almost certainly a mistake
         fprintf(stderr, "Usage: relaxation [int problem_size] [float precision] \n");
-        fprintf(stderr, "The problem size cannot be less than the number of processors + 2 \n");
+        fprintf(stderr, "The problem size cannot be less than the number of processors * 5 \n");
         return 1;
     }
 
@@ -145,28 +145,178 @@ int main(int argc, char *argv[])
     // printf("[%d] problem recieved:\n", rank);
     // array_2d_print(n_rows, p_size, local_problem, rank);
 
+    int proc_above = (rank >= 1) ? rank - 1 : MPI_PROC_NULL;
+    int proc_below = (rank < n_procs - 1) ? rank + 1 : MPI_PROC_NULL;
+
     bool has_converged = false, has_top_converged = false, has_bot_converged = false;
     int iterations = 0;
     while (!has_converged)
     {
         // printf("[%d] has_top_converged: %d -- has_bot_converged: %d \n", rank, has_top_converged, has_bot_converged);
         // Local operations
-        perform_iteration(n_rows, p_size, *local_problem, *local_problem_prev);
 
-        has_converged = matrix_has_converged(precision, n_rows, p_size,
-                                             *local_problem, *local_problem_prev);
+        // Because each of these are assumed to be different,
+        // the program asserts that there are at least 5 rows per process
+        // on startup
 
-        if (has_converged)
+        // ffff <- first_row, we receive this from neighbour above
+        // tttt <- top_row, we send this to neighbour above
+        // #### <- inner rows
+        // ####
+        // ####
+        // bbbb <- bot_row, we send this to neighbour below
+        // llll <- last_row, we receive this from neighbour below
+        double *first_row = &((*local_problem)[0][0]);
+        double *first_row_prev = &(*local_problem_prev[0][0]);
+
+        double *top_row = &((*local_problem)[1][0]);
+        double *top_row_prev = &((*local_problem_prev)[1][0]);
+
+        double *inner_rows = &((*local_problem)[2][0]);
+        double *inner_rows_prev = &((*local_problem_prev)[2][0]);
+
+        double *bot_row = &((*local_problem)[n_rows - 2][0]);
+
+        double *last_row = &((*local_problem)[n_rows - 1][0]);
+        double *last_row_prev = &((*local_problem_prev)[n_rows - 1][0]);
+
+        double *last_three_rows = &((*local_problem)[n_rows - 3][0]);
+        double *last_three_rows_prev = &((*local_problem_prev)[n_rows - 3][0]);
+
+        // Compute first and last row
+        // double(*first_row)[1][p_size] = (double(*)[1][p_size])(&((*local_problem)[0][0]));
+        // double(*first_row_prev)[1][p_size] = (double(*)[1][p_size])(&((*local_problem_prev)[0][0]));
+
+        // double(*last_row)[1][p_size] = (double(*)[1][p_size])(&((*local_problem)[n_rows - 1][0]));
+        // double(*last_row_prev)[1][p_size] = (double(*)[1][p_size])(&((*local_problem_prev)[n_rows - 1][0]));
+
+        int debug_rank = -1;
+        // if (rank == debug_rank)
+        // {
+        //     printf("\n\n");
+        //     printf("[%d] [it %d] chunk: \n", rank, iterations);
+        //     array_2d_print(n_rows, p_size, local_problem, rank);
+        // }
+
+        for (int i = 0; i < p_size; i++)
         {
-            printf("[%d] Converged after %d iterations \n", rank, iterations);
+            perform_iteration(3, p_size, *((double(*)[][p_size])first_row),
+                              *((double(*)[][p_size])first_row_prev));
+            perform_iteration(3, p_size, *((double(*)[][p_size])last_three_rows),
+                              *((double(*)[][p_size])last_three_rows_prev));
         }
 
-        sync_with_neighbours(rank, n_procs, n_rows,
-                             p_size, *local_problem, row_t,
-                             &has_converged, &has_top_converged,
-                             &has_bot_converged, iterations);
+        if (rank == debug_rank)
+        {
+            printf("\n\n");
+            printf("[%d] [it %d] chunk after top and bottom rows: \n", rank, iterations);
+            array_2d_print(n_rows, p_size, local_problem, rank);
+        }
 
-        memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
+        // Send first and last rows
+        // MPI_Request send_reqs[2], recv_reqs[2];
+        MPI_Request reqs[4];
+        MPI_Isend(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
+                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[0]));
+        MPI_Isend(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
+                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[1]));
+
+        // Start receive for neighbouring rows
+        // Might need to copy this into the prev_buffer to avoid conflict while were computing the rest
+        MPI_Irecv(*((double(*)[][p_size])first_row_prev), 1, row_t, proc_above,
+                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[2]));
+        MPI_Irecv(*((double(*)[][p_size])last_row_prev), 1, row_t, proc_below,
+                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[3]));
+
+        // Compute the rest of the rows.
+        // Starting at top row because the first row is always ignored
+        // double(*inner_rows)[n_rows - 2][p_size] = (double(*)[n_rows - 2][p_size])(&((*local_problem)[1][0]));
+        // double(*inner_rows_prev)[n_rows - 2][p_size] = (double(*)[n_rows - 2][p_size])(&((*local_problem_prev)[1][0]));
+        perform_iteration(n_rows - 2, p_size, *((double(*)[][p_size])top_row),
+                          *((double(*)[][p_size])top_row_prev));
+
+        if (rank == debug_rank)
+        {
+            printf("\n\n");
+            printf("[%d] [it %d]chunk after inner rows: \n", rank, iterations);
+            array_2d_print(n_rows, p_size, local_problem, rank);
+        }
+
+        // Perform check for convergence
+        // has_converged = (iterations >= 3);
+        has_converged = matrix_has_converged(precision, n_rows - 2, p_size,
+                                             *((double(*)[][p_size])top_row),
+                                             *((double(*)[][p_size])top_row_prev));
+        // if (has_converged)
+        //     printf("[%d] Converged after %d iterations \n", rank, iterations);
+
+        // Copy problem to other buffer for next iteration
+        // Not including the first and last rows as they will be copied in by
+        // the receive message
+        // size_t inner_rows_size = sizeof(double) * (size_t)p_size * (size_t)(n_rows - 4);
+        // memcpy(inner_rows_prev, inner_rows, inner_rows_size);
+        // memcpy(first_row_prev, first_row, sizeof(double) * (size_t)p_size * (size_t)(n_rows));
+        // memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
+        memcpy(top_row_prev, top_row, sizeof(double) * (size_t)p_size * (size_t)(n_rows - 2));
+
+        // sync_with_neighbours(rank, n_procs, n_rows,
+        //                      p_size, *local_problem, row_t,
+        //                      &has_converged, &has_top_converged,
+        //                      &has_bot_converged, iterations);
+
+        // Finish communicaiton with neighbours
+        MPI_Status statuses[n_procs];
+        MPI_Waitall(n_procs, reqs, statuses);
+
+        // Abort if any messages fail
+        for (int i = 0; i < n_procs; i++)
+        {
+            int err = statuses[i].MPI_ERROR;
+            if (err != MPI_SUCCESS)
+            {
+                char err_str[MPI_MAX_ERROR_STRING];
+                int resultlen;
+                MPI_Error_string(err, err_str, &resultlen);
+                fprintf(stderr,
+                        "[%d] Aborting. Error sending message to neighbour: %s \n",
+                        rank, err_str);
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+        }
+
+        // Check if all procs have converged
+        bool proc_converged[n_procs];
+        // if (has_converged)
+        // {
+        //     printf("[%d] still converged \n", rank);
+        // }
+        MPI_Allgather(&has_converged, 1, MPI_C_BOOL, proc_converged, 1,
+                      MPI_C_BOOL, MPI_COMM_WORLD);
+
+        // for (int j = 0; j < n_procs; j++)
+        // {
+        //     if (rank == j)
+        //     {
+        //         printf("[%d] converged array: ", rank);
+        //         for (int i = 0; i < n_procs; i++)
+        //         {
+        //             printf(" %s", proc_converged[i] ? "true" : "false");
+        //         }
+        //         printf("\n");
+        //     }
+        //     MPI_Barrier(MPI_COMM_WORLD);
+        // }
+
+        // Forcing chunk to continue iterating until all nodes have converged
+        for (int i = 0; i < n_procs; i++)
+        {
+            if (proc_converged[i] == false)
+            {
+                has_converged = false;
+                break;
+            }
+        }
+
         iterations++;
     }
 
@@ -198,15 +348,16 @@ int main(int argc, char *argv[])
 
     // free(problem_global);
     free(local_problem);
-
     MPI_Type_free(&row_t);
+
     MPI_Barrier(MPI_COMM_WORLD);
     double end_time = MPI_Wtime();
+
     MPI_Finalize();
 
     if (rank == ROOT)
     {
-        printf("Solved in %fs \n", end_time - start_time);
+        printf("Solved in %fs \n", (end_time - start_time));
         test_result_matches_sync_impl(p_size, precision, *problem_global,
                                       &load_testcase_1);
 
@@ -218,6 +369,14 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+/*
+Given an m x n matrix this will average each value a_ij with its
+4 directly touching neighbours.
+
+The first and last rows of each matrix will be ignored.
+E.g. if two 3xn matrices are passed in, only the centre row will have
+work done to it.
+*/
 void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
                        double prev_matrix[n_rows][n_cols])
 {
@@ -231,7 +390,7 @@ void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
                 prev_matrix[row + 1][col] +
                 prev_matrix[row][col - 1] +
                 prev_matrix[row][col + 1];
-            matrix[row][col] = neighbours_sum / 4.0;
+            matrix[row][col] = 0.25 * neighbours_sum;
         }
     }
 }
@@ -253,6 +412,9 @@ void send_to_neighbours(int rank, int n_procs, double *send_top,
                         bool has_converged, bool has_top_converged, bool has_bot_converged,
                         int iterations)
 {
+    MPI_Request send_requests[2];
+    MPI_Status send_statuses[2];
+
     // Send to neighbour above
     if ((rank - 1 >= 0) && !has_top_converged)
     {
@@ -262,7 +424,9 @@ void send_to_neighbours(int rank, int n_procs, double *send_top,
         //     MPI_Send(&iterations, 1, MPI_INT, rank - 1, CONVERGENCE_TAG,
         //              MPI_COMM_WORLD);
         // }
-        MPI_Send(send_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD);
+        MPI_Isend(send_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD,
+                  &(send_requests[0]));
+        // MPI_Send(send_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD);
     }
 
     // Send to neighbour below
@@ -274,7 +438,25 @@ void send_to_neighbours(int rank, int n_procs, double *send_top,
         //     MPI_Send(&iterations, 1, MPI_INT, rank + 1, CONVERGENCE_TAG,
         //              MPI_COMM_WORLD);
         // }
-        MPI_Send(send_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD);
+        MPI_Isend(send_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD,
+                  &(send_requests[1]));
+    }
+
+    MPI_Waitall(2, send_requests, send_statuses);
+
+    for (int i = 0; i < 2; i++)
+    {
+        int err = send_statuses[i].MPI_ERROR;
+        if (err != MPI_SUCCESS)
+        {
+            char err_str[MPI_MAX_ERROR_STRING];
+            int resultlen;
+            MPI_Error_string(err, err_str, &resultlen);
+            fprintf(stderr,
+                    "[%d] Aborting. Error sending message to neighbour: %s \n",
+                    rank, err_str);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
     }
 }
 
@@ -283,22 +465,77 @@ void receive_from_neighbours(int rank, int n_procs, double *recv_top,
                              bool has_top_converged, bool has_bot_converged,
                              int *max_neighbour_iterations)
 {
+    MPI_Request recv_requests[2];
+    MPI_Status recv_statuses[2];
+
+    int expected_msg_count;
+    if ((rank - 1 >= 0) && (rank + 1 < n_procs))
+    {
+        expected_msg_count = 2;
+    }
+    else
+    {
+        expected_msg_count = 1;
+    }
+
+    int msg_count = 0;
+    while (msg_count < expected_msg_count)
+    {
+        int msg_exists = (int)false;
+        MPI_Iprobe(rank - 1, DEFAULT_TAG, MPI_COMM_WORLD, &msg_exists, MPI_STATUS_IGNORE);
+        if (msg_exists)
+        {
+            MPI_Recv(recv_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD,
+                     MPI_STATUS_IGNORE);
+            msg_exists = (int)false;
+            msg_count++;
+        }
+
+        MPI_Iprobe(rank + 1, DEFAULT_TAG, MPI_COMM_WORLD, &msg_exists, MPI_STATUS_IGNORE);
+        if (msg_exists)
+        {
+            MPI_Recv(recv_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD,
+                     MPI_STATUS_IGNORE);
+            msg_count++;
+        }
+    }
     // Receive from neighbour above
-    if ((rank - 1 >= 0) && !has_top_converged)
-    {
-        MPI_Recv(recv_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
-        // check_proc_converged(rank, rank - 1, has_top_converged);
-    }
+    // if ((rank - 1 >= 0) && !has_top_converged)
+    // {
+    //     // MPI_Recv(recv_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD,
+    //     //          MPI_STATUS_IGNORE);
+    //     MPI_Irecv(recv_top, 1, row_t, rank - 1, DEFAULT_TAG, MPI_COMM_WORLD,
+    //               &(recv_requests[0]));
 
-    // Receive from neighbour below
-    if ((rank + 1 < n_procs) && !has_bot_converged)
-    {
-        MPI_Recv(recv_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
+    //     // check_proc_converged(rank, rank - 1, has_top_converged);
+    // }
 
-        // check_proc_converged(rank, rank + 1, has_bot_converged);
-    }
+    // // Receive from neighbour below
+    // if ((rank + 1 < n_procs) && !has_bot_converged)
+    // {
+    //     // MPI_Recv(recv_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD,
+    //     //          MPI_STATUS_IGNORE);
+    //     MPI_Irecv(recv_bot, 1, row_t, rank + 1, DEFAULT_TAG, MPI_COMM_WORLD,
+    //               &(recv_requests[1]));
+
+    //     // check_proc_converged(rank, rank + 1, has_bot_converged);
+    // }
+
+    // MPI_Waitall(2, recv_requests, recv_statuses);
+    // for (int i = 0; i < 2; i++)
+    // {
+    //     int err = recv_statuses[i].MPI_ERROR;
+    //     if (err != MPI_SUCCESS)
+    //     {
+    //         char err_str[MPI_MAX_ERROR_STRING];
+    //         int resultlen;
+    //         MPI_Error_string(err, err_str, &resultlen);
+    //         fprintf(stderr,
+    //                 "[%d] Aborting. Error sending message to neighbour: %s \n",
+    //                 rank, err_str);
+    //         MPI_Abort(MPI_COMM_WORLD, 1);
+    //     }
+    // }
 }
 
 /*
@@ -357,21 +594,24 @@ void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
     int max_neighbour_iterations = 0;
     if (rank % 2 == 0)
     {
-        send_to_neighbours(rank, n_procs, send_top_row, send_bot_row, row_t,
-                           *has_converged, *has_top_converged, *has_bot_converged,
-                           iterations);
-        receive_from_neighbours(rank, n_procs, recv_top_row, recv_bot_row, row_t,
-                                *has_top_converged, *has_bot_converged,
-                                &max_neighbour_iterations);
+        // Use sendRecv
+        // Perhaps replace these if statements with a top and bot neighbour and use MPI_NULL_PROCESS when they are invalid
+
+        // send_to_neighbours(rank, n_procs, send_top_row, send_bot_row, row_t,
+        //                    *has_converged, *has_top_converged, *has_bot_converged,
+        //                    iterations);
+        // receive_from_neighbours(rank, n_procs, recv_top_row, recv_bot_row, row_t,
+        //                         *has_top_converged, *has_bot_converged,
+        //                         &max_neighbour_iterations);
     }
     else
     {
-        receive_from_neighbours(rank, n_procs, recv_top_row, recv_bot_row, row_t,
-                                *has_top_converged, *has_bot_converged,
-                                &max_neighbour_iterations);
-        send_to_neighbours(rank, n_procs, send_top_row, send_bot_row, row_t,
-                           *has_converged, *has_top_converged, *has_bot_converged,
-                           iterations);
+        // receive_from_neighbours(rank, n_procs, recv_top_row, recv_bot_row, row_t,
+        //                         *has_top_converged, *has_bot_converged,
+        //                         &max_neighbour_iterations);
+        // send_to_neighbours(rank, n_procs, send_top_row, send_bot_row, row_t,
+        //                    *has_converged, *has_top_converged, *has_bot_converged,
+        //                    iterations);
     }
 
     // printf("[%d] recv_top: ", rank);
@@ -527,8 +767,11 @@ bool test_result_matches_sync_impl(int p_size, double precision,
     (*load_testcase)(p_size, sync_solution);
     solve_sync(p_size, sync_solution, precision);
 
-    // printf("synchronously solved solution: \n");
-    // array_2d_print(p_size, p_size, sync_solution, ROOT);
+    if (p_size <= 20)
+    {
+        printf("synchronously solved solution: \n");
+        array_2d_print(p_size, p_size, sync_solution, ROOT);
+    }
 
     bool sols_match = matrix_has_converged(precision, p_size, p_size,
                                            comparison, *sync_solution);

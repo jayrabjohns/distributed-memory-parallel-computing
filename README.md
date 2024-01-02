@@ -13,9 +13,10 @@ https://docs.open-mpi.org/en/v5.0.x/installing-open-mpi/quickstart.html
 mpicc relaxation.c -o relaxation
 ```
 
-3. Run the binary
+3. Run with mpirun to spin up multiple nodes locally
 ```bash
-./relaxation
+# Usage: run.sh [num of nodes] [problem size] [precision]
+./scripts/run.sh 4 20000 0.01
 ```
 
 ## Running on a cluster
