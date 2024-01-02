@@ -1,6 +1,14 @@
 #ifndef RELAXATION_H
 #define RELAXATION_H
 
+#include <stdbool.h>
+
+typedef struct
+{
+    bool has_converged;
+    // double *row;
+} neighbour_data;
+
 /*
 Distributes work evenly among processes. The first and last rows of the matrix
 are not worked on, so they are not allocated.
@@ -80,15 +88,15 @@ void load_testcase_1(int size, double (*matrix)[size][size]);
 Runs a synchronous implemetation for the given problem and compares
 it with a given solution.
 
-Returns true if the solutions match within one unit of `precision`.
+Returns true if the solutions match within one unit of `precision`.SUCCESS
 
 `p_size` is the length of one side of `comparison.
 `comparison` is a 2D square matrix and is the solution to compare against.
 `load_testcase` is a funciton that provides the starting problem configuraion.
 */
 bool test_result_matches_sync_impl(int p_size, double precision,
-                              double(comparison)[p_size][p_size],
-                              void (*load_testcase)(int, double (*)[p_size][p_size]));
+                                   double(comparison)[p_size][p_size],
+                                   void (*load_testcase)(int, double (*)[p_size][p_size]));
 
 /*
 Adapted from coursework 1.

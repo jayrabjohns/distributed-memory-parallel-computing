@@ -1,0 +1,135 @@
+[H[2J[3Jrow counts: 5000, 5000, 4999, 4999, 
+row starts: 0, 5000, 10000, 14999, 
+send counts: 5002, 5002, 5001, 5001, 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+has converged: false false false false 
+[2] Converged after 23 iterations 
+[1] Converged after 23 iterations 
+[3] Converged after 23 iterations 
+[1] still converged 
+[2] still converged 
+[3] still converged 
+has converged: false true true true 
+[3] Converged after 24 iterations 
+[1] Converged after 24 iterations 
+[2] Converged after 24 iterations 
+[3] still converged 
+[2] still converged 
+has converged: false true true true 
+[1] still converged 
+[1] Converged after 25 iterations 
+[2] Converged after 25 iterations 
+[3] Converged after 25 iterations 
+[1] still converged 
+[2] still converged 
+[3] still converged 
+has converged: false true true true 
+[2] Converged after 26 iterations 
+[1] Converged after 26 iterations 
+[3] Converged after 26 iterations 
+[3] still converged 
+[2] still converged 
+[1] still converged 
+has converged: false true true true 
+[1] Converged after 27 iterations 
+[3] Converged after 27 iterations 
+[2] Converged after 27 iterations 
+[1] still converged 
+[2] still converged 
+[3] still converged 
+has converged: false true true true 
+[1] Converged after 28 iterations 
+[2] Converged after 28 iterations 
+[3] Converged after 28 iterations 
+[2] still converged 
+[3] still converged 
+[1] still converged 
+has converged: false true true true 
+[2] Converged after 29 iterations 
+[1] Converged after 29 iterations 
+[3] Converged after 29 iterations 
+[2] still converged 
+[3] still converged 
+[1] still converged 
+has converged: false true true true 
+[3] Converged after 30 iterations 
+[2] Converged after 30 iterations 
+[1] Converged after 30 iterations 
+[1] still converged 
+[3] still converged 
+[2] still converged 
+has converged: false true true true 
+[2] Converged after 31 iterations 
+[1] Converged after 31 iterations 
+[3] Converged after 31 iterations 
+[1] still converged 
+[2] still converged 
+[3] still converged 
+has converged: false true true true 
+[1] Converged after 32 iterations 
+[3] Converged after 32 iterations 
+[2] Converged after 32 iterations 
+[1] still converged 
+[2] still converged 
+[3] still converged 
+has converged: false true true true 
+[1] Converged after 33 iterations 
+[3] Converged after 33 iterations 
+[2] Converged after 33 iterations 
+[1] still converged 
+[2] still converged 
+[3] still converged 
+has converged: false true true true 
+[3] Converged after 34 iterations 
+[1] Converged after 34 iterations 
+[2] Converged after 34 iterations 
+[1] still converged 
+[3] still converged 
+[2] still converged 
+has converged: false true true true 
+[3] Converged after 35 iterations 
+[1] Converged after 35 iterations 
+[2] Converged after 35 iterations 
+[2] still converged 
+[1] still converged 
+[3] still converged 
+has converged: false true true true 
+[3] Converged after 36 iterations 
+[1] Converged after 36 iterations 
+[2] Converged after 36 iterations 
+[0] Converged after 36 iterations 
+[0] still converged 
+[1] still converged 
+[3] still converged 
+[2] still converged 
+has converged: true true true true 
+[3] total iterations: 37 
+[2] total iterations: 37 
+[1] total iterations: 37 
+[0] total iterations: 37 
+Solved in 91.653889s 
+
+[SYNC] solved in 37 iterations in 114s
+PASS Solutions match within a precision of 0.010000 
+PASS Final matrix has successfully converged with a precision of 0.010000 
