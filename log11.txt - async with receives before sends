@@ -1,0 +1,15 @@
+row counts: 1250, 1250, 1249, 1249, 
+row starts: 0, 1250, 2500, 3749, 
+send counts: 1252, 1252, 1251, 1251, 
+size of row: 40000b 
+[3] total iterations: 360 
+[0] total iterations: 360 
+[2] total iterations: 360 
+[1] total iterations: 360 
+Solved in 296.562459s 
+
+[SYNC] solved in 360 iterations in 70s
+PASS Solutions match within a precision of 0.001000 
+PASS Final matrix has successfully converged with a precision of 0.001000 
+
+recvs before sends

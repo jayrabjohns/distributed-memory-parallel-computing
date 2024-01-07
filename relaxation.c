@@ -11,6 +11,7 @@
 #define ROOT 0
 #define DEFAULT_TAG 99
 #define CONVERGENCE_TAG 98
+#define ASYNC_COMMS true
 
 void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
                        double prev_matrix[n_rows][n_cols]);
@@ -99,6 +100,8 @@ int main(int argc, char *argv[])
             printf("%d, ", send_counts[i]);
         }
         printf("\n");
+
+        printf("size of row: %ldb \n", p_size * sizeof(double));
     }
 
     // Allocate local chunk of the problem to work on
@@ -213,20 +216,29 @@ int main(int argc, char *argv[])
             array_2d_print(n_rows, p_size, local_problem, rank);
         }
 
-        // Send first and last rows
-        // MPI_Request send_reqs[2], recv_reqs[2];
-        MPI_Request reqs[4];
-        MPI_Isend(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
+// Send first and last rows
+#if ASYNC_COMMS
+        int request_count = 2;
+        MPI_Request reqs[request_count];
+        // Start receive for neighbouring rows
+        // Copy this into the prev_buffer to avoid conflict while were computing the rest
+        MPI_Irecv(*((double(*)[][p_size])first_row_prev), 1, row_t, proc_above,
                   DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[0]));
-        MPI_Isend(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
+        MPI_Irecv(*((double(*)[][p_size])last_row_prev), 1, row_t, proc_below,
                   DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[1]));
 
-        // Start receive for neighbouring rows
-        // Might need to copy this into the prev_buffer to avoid conflict while were computing the rest
-        MPI_Irecv(*((double(*)[][p_size])first_row_prev), 1, row_t, proc_above,
-                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[2]));
-        MPI_Irecv(*((double(*)[][p_size])last_row_prev), 1, row_t, proc_below,
-                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[3]));
+        // We are careful to not read or moidfy the buffers used by the send or
+        // receive operations before they finish
+        // MPI_Isend(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
+        //           DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[2]));
+        // MPI_Isend(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
+        //           DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[3]));
+
+        MPI_Rsend(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
+                  DEFAULT_TAG, MPI_COMM_WORLD);
+        MPI_Rsend(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
+                  DEFAULT_TAG, MPI_COMM_WORLD);
+#endif
 
         // Compute the rest of the rows.
         // Starting at top row because the first row is always ignored
@@ -265,58 +277,42 @@ int main(int argc, char *argv[])
         //                      &has_bot_converged, iterations);
 
         // Finish communicaiton with neighbours
-        MPI_Status statuses[n_procs];
-        MPI_Waitall(n_procs, reqs, statuses);
+#if ASYNC_COMMS
+        MPI_Status statuses[request_count];
+        MPI_Waitall(request_count, reqs, statuses);
 
         // Abort if any messages fail
-        for (int i = 0; i < n_procs; i++)
+        for (int i = 0; i < request_count; i++)
         {
-            int err = statuses[i].MPI_ERROR;
-            if (err != MPI_SUCCESS)
+            int error_code = statuses[i].MPI_ERROR;
+            if (error_code != MPI_SUCCESS)
             {
-                char err_str[MPI_MAX_ERROR_STRING];
-                int resultlen;
-                MPI_Error_string(err, err_str, &resultlen);
+                char err_str[MPI_MAX_ERROR_STRING] = "";
+                int result_len;
+                // MPI_Error_string(error_code, err_str, &result_len);
                 fprintf(stderr,
                         "[%d] Aborting. Error sending message to neighbour: %s \n",
                         rank, err_str);
                 MPI_Abort(MPI_COMM_WORLD, 1);
             }
         }
+#else
+        MPI_Sendrecv(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
+                     DEFAULT_TAG, *((double(*)[][p_size])first_row_prev), 1,
+                     row_t, proc_above, DEFAULT_TAG, MPI_COMM_WORLD,
+                     MPI_STATUS_IGNORE);
+        MPI_Sendrecv(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
+                     DEFAULT_TAG, *((double(*)[][p_size])last_row_prev), 1,
+                     row_t, proc_below, DEFAULT_TAG, MPI_COMM_WORLD,
+                     MPI_STATUS_IGNORE);
+#endif
 
         // Check if all procs have converged
-        bool proc_converged[n_procs];
-        // if (has_converged)
-        // {
-        //     printf("[%d] still converged \n", rank);
-        // }
-        MPI_Allgather(&has_converged, 1, MPI_C_BOOL, proc_converged, 1,
-                      MPI_C_BOOL, MPI_COMM_WORLD);
-
-        // for (int j = 0; j < n_procs; j++)
-        // {
-        //     if (rank == j)
-        //     {
-        //         printf("[%d] converged array: ", rank);
-        //         for (int i = 0; i < n_procs; i++)
-        //         {
-        //             printf(" %s", proc_converged[i] ? "true" : "false");
-        //         }
-        //         printf("\n");
-        //     }
-        //     MPI_Barrier(MPI_COMM_WORLD);
-        // }
+        bool all_have_converged = false;
+        MPI_Allreduce(&has_converged, &all_have_converged, 1, MPI_BYTE, MPI_LAND, MPI_COMM_WORLD);
 
         // Forcing chunk to continue iterating until all nodes have converged
-        for (int i = 0; i < n_procs; i++)
-        {
-            if (proc_converged[i] == false)
-            {
-                has_converged = false;
-                break;
-            }
-        }
-
+        has_converged = all_have_converged;
         iterations++;
     }
 

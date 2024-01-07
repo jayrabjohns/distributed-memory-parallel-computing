@@ -23,6 +23,27 @@ One possibility is to onyl start checking for convergence once the process itsel
 Instead of the described approach we will attempt an allgather.
 An allgather works and is the simplest solution.
 
+There doesn't seem to be an MPI_Iallreduce, so the allreduce has to stay as a blocking call, removing hte potential to do any work while waiting for the communication. Although, I'm spectical that even it did exist whether it would serve much benefit, since the message size is so small anyway (a byte) the overhead of additional rendezvous communications would surely outway the benefit of any overlapped work.
+
+
+
+
+
+
+
+So the asynccommunication options is slower. I think this is because fo the rendezvous operations introducing extra latency, under the hodd they have to perform multiple communications to establish when the sender and receiver are ready. This is backed up by online research where it is apparently a common enough problem and commonly enough known that for halo exchanges (neighbour to neighbour communications) 2 sendrecvs for each dimension is usually faster than async communications.
+
+I've come accross the halo exchange which seems to be perfect for modelling this problem.
+
+Communicators communicate in a ring fashion since each row only requires to talk ot its neighbours
+
+
+First implementation was to spit ranks into even and odd, even sends first while even receives first.
+This is essentially a more synchronous version of sendrcv, so we have moved to that.
+
+Could define Graph topology with MPI_DIST_GRAPH_CREATE and use it with MPI_neighbour_alltoallw or MPI_Ineighbour_alltoallw for the same communications in one MPI call,
+but for the sake of conceptual simplicity I have left it as separate point to point communications. These are refered to as nighbourhood collectives or communicators.
+
 ```C
 // After syncing hte message
     // Check top and bottom for convergence.
