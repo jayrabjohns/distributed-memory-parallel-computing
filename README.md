@@ -6,6 +6,8 @@ MPI is the de facto standard for scalable message passing between parallel progr
 
 Matrix relaxation is sometimes also called the [Jacobi method](https://en.wikipedia.org/wiki/Relaxation_(iterative_method)). In essence, a sliding window is passed over a matrix to calculate the average of a cell with its neighbours. This is an interesting problem to parallelise because each iteration depends on the previous iteration, and the value of each cell depends on its neighbours. This is especially interesting when parallelising over a distributed system because communication costs over a network are much higher in comparison to communication over memory. You must carefully minimise the data being transferred between processes while maintaining correctness.
 
+I solve the same problem using threads on a shared memory machine [here](https://github.com/jayrabjohns/shared-memory-parallel-computing?tab=readme-ov-file).
+
 #### High level design
 Broadly speaking:
 1. The root process splits a large matrix into chunks and sends them to worker processes, which could be on the same machine or a different node.
