@@ -10,21 +10,6 @@
 
 #define ROOT 0
 #define DEFAULT_TAG 99
-#define CONVERGENCE_TAG 98
-#define ASYNC_COMMS false
-
-void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
-                       double prev_matrix[n_rows][n_cols]);
-
-void sync_with_neighbours(int rank, int n_procs, int n_rows, int n_cols,
-                          double local_problem[n_rows][n_cols],
-                          MPI_Datatype row_t, bool *has_converged,
-                          bool *has_top_converged, bool *has_bot_converged,
-                          int iterations);
-
-bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size], double precision);
-
-void check_proc_converged(int rank, int source, bool *has_converged);
 
 int main(int argc, char *argv[])
 {
@@ -35,51 +20,67 @@ int main(int argc, char *argv[])
     MPI_Comm_size(MPI_COMM_WORLD, &n_procs);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
+    // Barrier to synchronise start timer
     MPI_Barrier(MPI_COMM_WORLD);
     double start_time = MPI_Wtime();
 
-    // Parse arguments
+    // Check there are enough arguments
     if (argc < 3)
     {
         fprintf(stderr, "Not enough arguments. \n");
-        fprintf(stderr, "Usage: relaxation [int problem_size] [float precision] \n");
+        fprintf(stderr,
+                "Usage: relaxation [int problem_size] [float precision] \n");
         return 1;
     }
+
+    // Parse arguments
     int p_size = atoi(argv[1]);
     double precision = atof(argv[2]);
 
+    // Because of assumptions made later, bordering rows are treated as unique,
+    //   so the program asserts that there are at least 5 rows per process
     if (p_size < n_procs * 5)
     {
         // Early fail because this was most almost certainly a mistake
-        fprintf(stderr, "Usage: relaxation [int problem_size] [float precision] \n");
-        fprintf(stderr, "The problem size cannot be less than the number of processors * 5 \n");
+        fprintf(stderr,
+                "Usage: relaxation [int problem_size] [float precision] \n");
+        fprintf(stderr,
+                "The problem size cannot be less than the num of nodes * 5 \n");
         return 1;
     }
 
+    // Allocate the global problem. This creates a 2D array represented by
+    //   a single contiguous block, which allows casting to a 1D array later on.
     int rc;
     double(*problem_global)[p_size][p_size];
     rc = array_2d_try_alloc((size_t)p_size, (size_t)p_size, &problem_global);
     if (rc != 0)
         return rc;
 
+    // Initialise problem. This could be changed to read in a file or something.
     if (rank == ROOT)
     {
         load_testcase_1(p_size, problem_global);
-        // printf("\n");
-        // array_2d_print(p_size, p_size, problem_global, rank);
     }
 
+    // Fairly allocate each process a nearly eaqual chunk of the problem
     int send_counts[n_procs], send_displs[n_procs], row_counts[n_procs];
     distribute_workload(p_size, n_procs, send_counts, send_displs, row_counts);
 
+    // The number of rows this process will locally work on
+    int n_rows = send_counts[rank];
+
     // Calculate displacements ignoring the first and last rows
+    //   This is needed for when nodes communicate their finished workloads.
+    //   Skipping this would potentially allow nodes to ovewrite others' work
+    //   at the end.
     int recv_displs[n_procs];
     for (int i = 0; i < n_procs; i++)
     {
         recv_displs[i] = send_displs[i] + 1;
     }
 
-    // Debug log rows each process will operate on
+    // Debug log shows what each process will operate on
     if (rank == ROOT)
     {
         printf("row counts: ");
@@ -104,250 +105,167 @@ int main(int argc, char *argv[])
         printf("size of row: %ldb \n", (size_t)p_size * sizeof(double));
     }
 
-    // Allocate local chunk of the problem to work on
-    int n_rows = send_counts[rank];
+    // Allocate memory for local problem
     double(*local_problem)[n_rows][p_size];
     rc = array_2d_try_alloc((size_t)n_rows, (size_t)p_size, &local_problem);
     if (rc != 0)
         return rc;
 
+    // Allocate memory for the previous iteeration of the local problem
     double(*local_problem_prev)[n_rows][p_size];
     rc = array_2d_try_alloc((size_t)n_rows, (size_t)p_size, &local_problem_prev);
     if (rc != 0)
         return rc;
 
-    // A datatype to represent rows of contiguous values
+    // A datatype to represent rows of contiguous values.
+    //   This can help conceptually when sending differing amounts of data to
+    //   processes, which happens when (p_size - 2) isn't a multiple of n_procs.
     MPI_Datatype row_t;
     MPI_Type_contiguous(p_size, MPI_DOUBLE, &row_t);
     MPI_Type_commit(&row_t);
-
-    // MPI_Datatype neighbour_data_t;
-    // MPI_Aint startid, startarray;
-    // MPI_Get_address(&(buffer.id), &startid);
-    // MPI_Get_address(&(buffer.array[0]), &startarray);
-    // const int block_legnths[2] = {1, 1};
-    // const MPI_Aint displacements[2] = {0, 1};
-    // const MPI_Datatype field_types[2] = {MPI_C_BOOL, row_t};
-
-    // const int block_legnths[1] = {1};
-    // const MPI_Aint displacements[1] = {0};
-    // const MPI_Datatype field_types[1] = {MPI_C_BOOL};
-
-    // MPI_Type_create_struct(1, block_legnths, displacements, field_types,
-    //                        &neighbour_data_t);
-    // MPI_Type_commit(&neighbour_data_t);
 
     // Distribute work among processes
     MPI_Scatterv(problem_global, send_counts, send_displs,
                  row_t, local_problem, send_counts[rank],
                  row_t, ROOT, MPI_COMM_WORLD);
 
-    // Create a copy of the matrix
+    // Create a copy of the local problem just received from the scatter.
     memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
 
-    // printf("[%d] problem recieved:\n", rank);
-    // array_2d_print(n_rows, p_size, local_problem, rank);
-
+    // Defining this process' neighbours. Using MPI_PROCC_NULL helps simplify
+    //   the handling of edge nodes with only 1 neighbour. When used as a source
+    //   or destination, the communication becomes a no-op.
     int proc_above = (rank >= 1) ? rank - 1 : MPI_PROC_NULL;
     int proc_below = (rank < n_procs - 1) ? rank + 1 : MPI_PROC_NULL;
 
+    // Get pointers to rows which overlap between processes.
+    double(*first_row)[1][p_size];
+    double(*last_row)[1][p_size];
+    double(*top_row)[1][p_size];
+    double(*bot_row)[1][p_size];
+    double(*last_three_rows)[3][p_size];
+    get_rows(p_size, n_rows, *local_problem, &first_row, &last_row, &top_row,
+             &bot_row, &last_three_rows);
+
+    // Get pointers to rows in the prev copy
+    double(*first_row_prev)[1][p_size];
+    double(*last_row_prev)[1][p_size];
+    double(*top_row_prev)[1][p_size];
+    double(*bot_row_prev)[1][p_size];
+    double(*last_three_rows_prev)[3][p_size];
+    get_rows(p_size, n_rows, *local_problem_prev, &first_row_prev,
+             &last_row_prev, &top_row_prev, &bot_row_prev,
+             &last_three_rows_prev);
+
+    // Perform local operations until converged
     bool has_converged = false;
     int iterations = 0;
     while (!has_converged)
     {
-        // printf("[%d] has_top_converged: %d -- has_bot_converged: %d \n", rank, has_top_converged, has_bot_converged);
-        // Local operations
+        // The matrix is composed like this:
+        // fffffff <- first_row, we receive this from neighbour above
+        // ttttttt <- top_row, we send this to neighbour above
+        // #######
+        // ####### <- rest of the matrix
+        // #######
+        // bbbbbbb <- bot_row, we send this to neighbour below
+        // lllllll <- last_row, we receive this from neighbour below
 
-        // Because each of these are assumed to be different,
-        // the program asserts that there are at least 5 rows per process
-        // on startup
-
-        // ffff <- first_row, we receive this from neighbour above
-        // tttt <- top_row, we send this to neighbour above
-        // #### <- inner rows
-        // ####
-        // ####
-        // bbbb <- bot_row, we send this to neighbour below
-        // llll <- last_row, we receive this from neighbour below
-        double *first_row = &((*local_problem)[0][0]);
-        double *first_row_prev = &(*local_problem_prev[0][0]);
-
-        double *top_row = &((*local_problem)[1][0]);
-        double *top_row_prev = &((*local_problem_prev)[1][0]);
-
-        double *bot_row = &((*local_problem)[n_rows - 2][0]);
-
-        double *last_row_prev = &((*local_problem_prev)[n_rows - 1][0]);
-
-        double *last_three_rows = &((*local_problem)[n_rows - 3][0]);
-        double *last_three_rows_prev = &((*local_problem_prev)[n_rows - 3][0]);
-
-        // Compute first and last row
-        // double(*first_row)[1][p_size] = (double(*)[1][p_size])(&((*local_problem)[0][0]));
-        // double(*first_row_prev)[1][p_size] = (double(*)[1][p_size])(&((*local_problem_prev)[0][0]));
-
-        // double(*last_row)[1][p_size] = (double(*)[1][p_size])(&((*local_problem)[n_rows - 1][0]));
-        // double(*last_row_prev)[1][p_size] = (double(*)[1][p_size])(&((*local_problem_prev)[n_rows - 1][0]));
-
-        int debug_rank = -1;
-        // if (rank == debug_rank)
-        // {
-        //     printf("\n\n");
-        //     printf("[%d] [it %d] chunk: \n", rank, iterations);
-        //     array_2d_print(n_rows, p_size, local_problem, rank);
-        // }
-
+        // Compute the top and bottom row first, so we can start
+        //   non-blocking communications earlier
         for (int i = 0; i < p_size; i++)
         {
-            perform_iteration(3, p_size, *((double(*)[][p_size])first_row),
-                              *((double(*)[][p_size])first_row_prev));
-            perform_iteration(3, p_size, *((double(*)[][p_size])last_three_rows),
-                              *((double(*)[][p_size])last_three_rows_prev));
+            perform_iteration(3, p_size, *first_row, *first_row_prev);
+            perform_iteration(3, p_size, *last_three_rows,
+                              *last_three_rows_prev);
         }
 
-        if (rank == debug_rank)
-        {
-            printf("\n\n");
-            printf("[%d] [it %d] chunk after top and bottom rows: \n", rank, iterations);
-            array_2d_print(n_rows, p_size, local_problem, rank);
-        }
-
-// Send first and last rows
-#if ASYNC_COMMS
+        // Send first and last rows
         int request_count = 4;
         MPI_Request reqs[request_count];
         // We are careful to not read or moidfy the buffers used by the send or
         // receive operations before they finish
 
-        // Start receive for neighbouring rows
-        // Copy this into the prev_buffer to avoid conflict while were computing the rest
-        MPI_Irecv(*((double(*)[][p_size])first_row_prev), 1, row_t, proc_above,
-                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[0]));
-        MPI_Irecv(*((double(*)[][p_size])last_row_prev), 1, row_t, proc_below,
-                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[1]));
+        // Start receive for neighbouring rows. Copy this into prev_buffer
+        //   to avoid conflict while computing the rest of the matrix
+        MPI_Irecv(*first_row_prev, 1, row_t, proc_above, DEFAULT_TAG,
+                  MPI_COMM_WORLD, &(reqs[0]));
+        MPI_Irecv(*last_row_prev, 1, row_t, proc_below, DEFAULT_TAG,
+                  MPI_COMM_WORLD, &(reqs[1]));
 
-        // MPI_Rsend(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
-        //           DEFAULT_TAG, MPI_COMM_WORLD);
-        // MPI_Rsend(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
-        //           DEFAULT_TAG, MPI_COMM_WORLD);
-
-        MPI_Isend(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
-                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[2]));
-        MPI_Isend(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
-                  DEFAULT_TAG, MPI_COMM_WORLD, &(reqs[3]));
-#endif
+        // Start send for neighbouring rows. We are careful to not
+        //   modify top_row or bot_row until the send has completed.
+        MPI_Isend(*top_row, 1, row_t, proc_above, DEFAULT_TAG,
+                  MPI_COMM_WORLD, &(reqs[2]));
+        MPI_Isend(*bot_row, 1, row_t, proc_below, DEFAULT_TAG,
+                  MPI_COMM_WORLD, &(reqs[3]));
 
         // Compute the rest of the rows.
-        // Starting at top row because the first row is always ignored
-        // double(*inner_rows)[n_rows - 2][p_size] = (double(*)[n_rows - 2][p_size])(&((*local_problem)[1][0]));
-        // double(*inner_rows_prev)[n_rows - 2][p_size] = (double(*)[n_rows - 2][p_size])(&((*local_problem_prev)[1][0]));
-        perform_iteration(n_rows - 2, p_size, *((double(*)[][p_size])top_row),
-                          *((double(*)[][p_size])top_row_prev));
+        perform_iteration(n_rows - 2, p_size, *top_row, *top_row_prev);
 
-        if (rank == debug_rank)
-        {
-            printf("\n\n");
-            printf("[%d] [it %d]chunk after inner rows: \n", rank, iterations);
-            array_2d_print(n_rows, p_size, local_problem, rank);
-        }
-
-        // Perform check for convergence
-        // has_converged = (iterations >= 3);
+        // Check if converged on local problem
+        // Ignore first and last rows as they belong to other processes
         has_converged = matrix_has_converged(precision, n_rows - 2, p_size,
-                                             *((double(*)[][p_size])top_row),
-                                             *((double(*)[][p_size])top_row_prev));
-        // if (has_converged)
-        //     printf("[%d] Converged after %d iterations \n", rank, iterations);
+                                             *top_row, *top_row_prev);
 
-        // Copy problem to other buffer for next iteration
-        // Not including the first and last rows as they will be copied in by
-        // the receive message
-        // size_t inner_rows_size = sizeof(double) * (size_t)p_size * (size_t)(n_rows - 4);
-        // memcpy(inner_rows_prev, inner_rows, inner_rows_size);
-        // memcpy(first_row_prev, first_row, sizeof(double) * (size_t)p_size * (size_t)(n_rows));
-        // memcpy(local_problem_prev, local_problem, sizeof(*local_problem_prev));
-        memcpy(top_row_prev, top_row, sizeof(double) * (size_t)p_size * (size_t)(n_rows - 2));
+        // Copy problem to the prev buffer for next iteration. ignoring
+        //   first_row and last_row as they will be copied in
+        //   by the receive message
+        size_t size = sizeof(double) * (size_t)p_size * (size_t)(n_rows - 2);
+        memcpy((double *)top_row_prev, (double *)top_row, size);
 
-        // sync_with_neighbours(rank, n_procs, n_rows,
-        //                      p_size, *local_problem, row_t,
-        //                      &has_converged, &has_top_converged,
-        //                      &has_bot_converged, iterations);
-
-        // Finish communicaiton with neighbours
-#if ASYNC_COMMS
+        // Block to finish communicaiton with neighbours
         MPI_Status statuses[request_count];
         MPI_Waitall(request_count, reqs, statuses);
 
-        // Abort if any messages fail
+        // Abort if any messages fail. These will not be caught by
+        //   MPI_ERRORS_ARE_FATAL and so must be checked manually
         for (int i = 0; i < request_count; i++)
         {
             int error_code = statuses[i].MPI_ERROR;
             if (error_code != MPI_SUCCESS)
             {
                 char err_str[MPI_MAX_ERROR_STRING] = "";
-                // int result_len;
-                // MPI_Error_string(error_code, err_str, &result_len);
+                int result_len;
+                MPI_Error_string(error_code, err_str, &result_len);
                 fprintf(stderr,
                         "[%d] Aborting. Error sending message to neighbour: %s \n",
                         rank, err_str);
                 MPI_Abort(MPI_COMM_WORLD, 1);
             }
         }
-#else
-        MPI_Sendrecv(*((double(*)[][p_size])top_row), 1, row_t, proc_above,
-                     DEFAULT_TAG, *((double(*)[][p_size])first_row_prev), 1,
-                     row_t, proc_above, DEFAULT_TAG, MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        MPI_Sendrecv(*((double(*)[][p_size])bot_row), 1, row_t, proc_below,
-                     DEFAULT_TAG, *((double(*)[][p_size])last_row_prev), 1,
-                     row_t, proc_below, DEFAULT_TAG, MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-#endif
 
-        // Check if all procs have converged
+        // Check if all processes have converged by reducing convergence flags
+        //   with logical-and operation. Send type is an MPI_BYTE because
+        //   MPI_LAND doesn't support C booleans
         bool all_have_converged = false;
-        MPI_Allreduce(&has_converged, &all_have_converged, 1, MPI_BYTE, MPI_LAND, MPI_COMM_WORLD);
+        MPI_Allreduce(&has_converged, &all_have_converged, 1, MPI_BYTE,
+                      MPI_LAND, MPI_COMM_WORLD);
 
-        // Forcing chunk to continue iterating until all nodes have converged
+        // Force chunk to continue iterating if flag is false somewhere else
         has_converged = all_have_converged;
         iterations++;
     }
 
     printf("[%d] total iterations: %d \n", rank, iterations);
 
-    // Ignore first row since otherwise it could overwrite another processe's
-    // work during reconstruction.
+    // Ignore first row since otherwise it could overwrite another process'
+    //   work during reconstruction.
     const double *sendbuf = &((*local_problem)[1][0]);
     MPI_Gatherv(sendbuf, row_counts[rank], row_t, problem_global, row_counts,
                 recv_displs, row_t, ROOT, MPI_COMM_WORLD);
 
-    // // Print final matrix for each node
-    // for (int i = 0; i < n_procs; i++)
-    // {
-    //     if (rank == i)
-    //     {
-    //         printf("\n[%d] final chunk \n", rank);
-    //         array_2d_print(n_rows, p_size, local_problem, rank);
-    //     }
-    //     MPI_Barrier(MPI_COMM_WORLD);
-    // }
-
-    // if (rank == ROOT)
-    // {
-    //     printf("\n\n");
-    //     printf("Final array: \n");
-    //     array_2d_print(p_size, p_size, problem_global, rank);
-    // }
-
-    // free(problem_global);
+    // Free local resources. The root might still require problem_global for
+    //   testing purposes
     free(local_problem);
     MPI_Type_free(&row_t);
 
+    // Synchronise for the final timing calculation
     MPI_Barrier(MPI_COMM_WORLD);
     double end_time = MPI_Wtime();
-
     MPI_Finalize();
 
+    // Perform unit tests if needed
     if (rank == ROOT)
     {
         printf("Solved in %fs \n", (end_time - start_time));
@@ -357,6 +275,7 @@ int main(int argc, char *argv[])
         test_result_has_converged(p_size, problem_global, precision);
     }
 
+    // Free remaining resources
     free(problem_global);
 
     return 0;
@@ -373,7 +292,6 @@ work done to it.
 void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
                        double prev_matrix[n_rows][n_cols])
 {
-    // Perform calculations from start row until end row
     for (int row = 1; row < n_rows - 1; row++)
     {
         for (int col = 1; col < n_cols - 1; col++)
@@ -388,34 +306,60 @@ void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
     }
 }
 
-void check_proc_converged(int rank, int source, bool *has_converged)
-{
-    int message_exists = 0;
-    MPI_Iprobe(source, CONVERGENCE_TAG, MPI_COMM_WORLD, &message_exists,
-               MPI_STATUS_IGNORE);
-
-    if (message_exists)
-    {
-        printf("[%d] Convergence message found from [%d] \n", rank, source);
-        MPI_Recv(has_converged, 1, MPI_C_BOOL, source, CONVERGENCE_TAG,
-                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    }
-}
-
 void distribute_workload(int p_size, int n_procs, int send_counts[n_procs],
                          int displacements[n_procs], int row_counts[n_procs])
 {
-    int rows_per_proc = (p_size - 2) / n_procs;
-    int extra_rows = (p_size - 2) % n_procs;
-    int rows, total_displacement = 0;
+    int total_rows = (p_size - 2);
+    int rows_per_proc = total_rows / n_procs;
+    int remainder_rows = total_rows % n_procs;
+    int n_rows, total_displacement = 0;
     for (int i = 0; i < n_procs; i++)
     {
-        rows = rows_per_proc + (i < extra_rows ? 1 : 0);
-        row_counts[i] = rows;
-        send_counts[i] = rows + 2;
+        n_rows = rows_per_proc + (i < remainder_rows ? 1 : 0);
+        row_counts[i] = n_rows;
+        send_counts[i] = n_rows + 2;
         displacements[i] = total_displacement;
-        total_displacement += rows;
+        total_displacement += n_rows;
     }
+}
+
+void get_rows(int p_size, int n_rows,
+              double matrix[p_size][p_size],
+              double (**first_row)[1][p_size],
+              double (**last_row)[1][p_size],
+              double (**top_row)[1][p_size],
+              double (**bot_row)[1][p_size],
+              double (**last_three_rows)[3][p_size])
+{
+    // The matrix is composed like this:
+    // fffffff <- first_row, we receive this from neighbour above
+    // ttttttt <- top_row, we send this to neighbour above
+    // #######
+    // ####### <- rest of the matrix
+    // #######
+    // bbbbbbb <- bot_row, we send this to neighbour below
+    // lllllll <- last_row, we receive this from neighbour below
+
+    // Because of how matrices are represented in this program,
+    //   it's a little tricky to take pointer of it.
+    //   Each step has been broken down into taking the pointer of the row,
+    //   then casting it to the correct type. The cast step isn't strictly
+    //   necessary, but it prevents some warnings when compiled with -Wall
+
+    double *first_row_double = &matrix[0][0];
+    *first_row = (double(*)[][p_size])first_row_double;
+
+    double *last_row_double = &matrix[n_rows - 1][0];
+    *last_row = (double(*)[][p_size])last_row_double;
+
+    double *top_row_double = &matrix[1][0];
+    *top_row = (double(*)[][p_size])(top_row_double);
+
+    double *bot_row_double = &matrix[n_rows - 2][0];
+    *bot_row = (double(*)[][p_size])bot_row_double;
+
+    double *last_three_rows_double = &matrix[n_rows - 3][0];
+    *last_three_rows = (double(*)[][p_size])last_three_rows_double;
 }
 
 bool matrix_has_converged(double precision, int n_rows, int n_cols,
@@ -431,7 +375,6 @@ bool matrix_has_converged(double precision, int n_rows, int n_cols,
             if (diff > precision)
             {
                 is_converged = false;
-                // printf("first mistake at [%d][%d] \n", row, col);
             }
         }
     }
@@ -506,29 +449,35 @@ bool test_result_matches_sync_impl(int p_size, double precision,
     }
     else
     {
-        printf("FAIL Solutions don't match within the given precision (%f) \n", precision);
+        printf("FAIL Solutions don't match within the given precision (%f) \n",
+               precision);
     }
 
     free(sync_solution);
     return sols_match;
 }
 
-bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size], double precision)
+bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size],
+                               double precision)
 {
     double(*mat_copy)[p_size][p_size];
     array_2d_try_alloc((size_t)p_size, (size_t)p_size, &mat_copy);
     memcpy(mat_copy, mat, sizeof(*mat_copy));
 
     perform_iteration(p_size, p_size, *mat_copy, *mat);
-    bool has_converged = matrix_has_converged(precision, p_size, p_size, *mat_copy, *mat);
+    bool has_converged = matrix_has_converged(precision, p_size, p_size,
+                                              *mat_copy, *mat);
 
     if (has_converged)
     {
-        printf("PASS Final matrix has successfully converged with a precision of %f \n", precision);
+        printf(
+            "PASS Final matrix has successfully converged with a precision of %f \n",
+            precision);
     }
     else
     {
-        printf("FAIL Final matrix has not converged with a precision of %f \n", precision);
+        printf("FAIL Final matrix has not converged with a precision of %f \n",
+               precision);
     }
 
     free(mat_copy);
@@ -537,6 +486,7 @@ bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size], double
 
 int solve_sync(int p_size, double (*matrix)[p_size][p_size], double precision)
 {
+    // Allocate memory to keep a copy of the previous iteration
     int rc = 0;
     double(*prev_matrix)[p_size][p_size];
     rc = array_2d_try_alloc((size_t)p_size, (size_t)p_size, &prev_matrix);
@@ -555,7 +505,8 @@ int solve_sync(int p_size, double (*matrix)[p_size][p_size], double precision)
     while (!converged)
     {
         perform_iteration(p_size, p_size, *matrix, *prev_matrix);
-        converged = matrix_has_converged(precision, p_size, p_size, *matrix, *prev_matrix);
+        converged = matrix_has_converged(precision, p_size, p_size, *matrix,
+                                         *prev_matrix);
         memcpy(prev_matrix, matrix, sizeof(*prev_matrix));
         ++iterations;
     }

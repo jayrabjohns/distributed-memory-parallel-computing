@@ -3,11 +3,36 @@
 
 #include <stdbool.h>
 
-typedef struct
-{
-    bool has_converged;
-    // double *row;
-} neighbour_data;
+/*
+#######################################################
+Usage: relaxation [problem size] [precision]
+#######################################################
+
+#######################################################
+Build and run locally:
+
+1. Have OpenMPI installed
+sudo apt install libopenmpi-dev
+
+or build from source
+https://docs.open-mpi.org/en/v5.0.x/installing-open-mpi/quickstart.html
+
+2. Compile with mpicc
+mpicc relaxation.c -o relaxation
+
+
+3. Run with mpirun to spin up multiple nodes locally
+mpirun -n 4 relaxation 10000 0.01
+######################################################
+*/
+
+/*
+Perform a single iteration of relaxation.
+
+Will not write to the first and last rows of `matrix`.
+*/
+void perform_iteration(int n_rows, int n_cols, double matrix[n_rows][n_cols],
+                       double prev_matrix[n_rows][n_cols]);
 
 /*
 Distributes work evenly among processes. The first and last rows of the matrix
@@ -26,6 +51,19 @@ should be omitted as to not overwrite another rows work.
 */
 void distribute_workload(int p_size, int n_procs, int send_counts[n_procs],
                          int displacements[n_procs], int row_counts[n_procs]);
+
+/*
+Returns various useful pointers to specific rows in the matrix.
+
+Useful when communication overlapping rows with neighbours.
+*/
+void get_rows(int p_size, int n_rows,
+              double matrix[p_size][p_size],
+              double (**first_row)[1][p_size],
+              double (**last_row)[1][p_size],
+              double (**top_row)[1][p_size],
+              double (**bot_row)[1][p_size],
+              double (**last_three_rows)[3][p_size]);
 
 /*
 Adapted from coursework 1.
@@ -97,6 +135,14 @@ Returns true if the solutions match within one unit of `precision`.SUCCESS
 bool test_result_matches_sync_impl(int p_size, double precision,
                                    double(comparison)[p_size][p_size],
                                    void (*load_testcase)(int, double (*)[p_size][p_size]));
+
+/*
+Performs another iteration locally to check if the provided matrix has converged
+
+This is useful when testing if the distributed implementation correctly detects convergence and stops at the correct point.
+*/
+bool test_result_has_converged(int p_size, double (*mat)[p_size][p_size],
+                               double precision);
 
 /*
 Adapted from coursework 1.

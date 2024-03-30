@@ -1,3 +1,0 @@
-[H[2J[3Jrow counts: 6, 6, 
-row starts: 0, 6, 
-send counts: 8, 8, 
